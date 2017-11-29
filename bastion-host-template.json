@@ -1,0 +1,448 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Provision the required resources for the blog post example 'How to Record SSH Sessions Established Through a Bastion Host'. Wait for the creation to complete before testing.",
+    "Parameters": {
+        "BastionHostKeyPair": {
+            "Description": "Select the key pair to use to launch the bastion host",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+        "Bucket" : {
+            "Description": "S3 bucket name to be used by the bastion host",
+            "Type": "String"
+        },
+        "VPC": {
+            "Description": "Select the VPC in which to deploy the bastion host",
+            "Type": "List<AWS::EC2::VPC::Id>"
+        },
+        "PublicSubnet": {
+            "Description": "Select the subnet in which to deploy the bastion host",
+            "Type": "List<AWS::EC2::Subnet::Id>"
+        }
+    },
+    "Mappings": {
+        "Region": {
+            "us-east-1": {
+                "HVM64": "ami-f5f41398"
+            },
+            "us-west-2": {
+                "HVM64": "ami-d0f506b0"
+            },
+            "us-west-1": {
+                "HVM64": "ami-6e84fa0e"
+            },
+            "eu-west-1": {
+                "HVM64": "ami-b0ac25c3"
+            },
+            "eu-central-1": {
+                "HVM64": "ami-d3c022bc"
+            },
+            "ap-southeast-1": {
+                "HVM64": "ami-1ddc0b7e"
+            },
+            "ap-northeast-2": {
+                "HVM64": "ami-cf32faa1"
+            },
+            "ap-northeast-1": {
+                "HVM64": "ami-29160d47"
+            },
+            "ap-southeast-2": {
+                "HVM64": "ami-0c95b86f"
+            },
+            "sa-east-1": {
+                "HVM64": "ami-fb890097"
+            }
+        }
+    },
+    "Resources": {
+        "BastionHostSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable SSH access to the bastion host from the Internet via port 22",
+                "VpcId": {
+                    "Fn::Select": [0, {"Ref": "VPC"}]
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "22",
+                        "ToPort": "22",
+                        "CidrIp": "0.0.0.0/0"
+                    }
+                ]
+            }
+        },
+        "BastionHostRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "bastion-policy",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:PutObject",
+                                        "s3:PutObjectAcl"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Join": [
+                                            "",
+                                            [
+                                                "arn:aws:s3:::",
+                                                {
+                                                    "Ref": "Bucket"
+                                                },
+                                                "/logs/*"
+                                            ]
+                                        ]
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "s3:GetObject",
+                                    "Resource": {
+                                        "Fn::Join": [
+                                            "",
+                                            [
+                                                "arn:aws:s3:::",
+                                                {
+                                                    "Ref": "Bucket"
+                                                },
+                                                "/public-keys/*"
+                                            ]
+                                        ]
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:ListBucket"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Join": [
+                                            "",
+                                            [
+                                                "arn:aws:s3:::",
+                                                {
+                                                    "Ref": "Bucket"
+                                                }
+                                            ]
+                                        ]
+                                    },
+                                    "Condition": {
+                                        "StringEquals": {
+                                            "s3:prefix": "public-keys/"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "BastionHostProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Roles": [
+                    {
+                        "Ref": "BastionHostRole"
+                    }
+                ],
+                "Path": "/"
+            }
+        },
+        "BastionHostInstance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "InstanceType": "t2.micro",
+                "IamInstanceProfile": {
+                    "Ref": "BastionHostProfile"
+                },
+                "KeyName": {
+                    "Ref": "BastionHostKeyPair"
+                },
+                "SubnetId": {
+                    "Fn::Select": [0, {"Ref": "PublicSubnet"}]
+                },
+                "SecurityGroupIds": [
+                    {
+                        "Ref": "BastionHostSecurityGroup"
+                    }
+                ],
+                "ImageId": {
+                    "Fn::FindInMap": [
+                        "Region",
+                        {
+                            "Ref": "AWS::Region"
+                        },
+                        "HVM64"
+                    ]
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Bastion host"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "#!/bin/bash -x\n",
+                                "yum -y update --security\n",
+                                "\n",
+                                "##########################\n",
+                                "## ENABLE SSH RECORDING ##\n",
+                                "##########################\n",
+                                "\n",
+                                "# Create a new folder for the log files\n",
+                                "mkdir /var/log/bastion\n",
+                                "\n",
+                                "# Allow ec2-user only to access this folder and its content\n",
+                                "chown ec2-user:ec2-user /var/log/bastion\n",
+                                "chmod -R 770 /var/log/bastion\n",
+                                "setfacl -Rdm other:0 /var/log/bastion\n",
+                                "\n",
+                                "# Make OpenSSH execute a custom script on logins\n",
+                                "echo -e \"\\nForceCommand /usr/bin/bastion/shell\" >> /etc/ssh/sshd_config\n",
+                                "\n",
+                                "# Block some SSH features that bastion host users could use to circumvent the solution\n",
+                                "awk '!/AllowTcpForwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config\n",
+                                "awk '!/X11Forwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config\n",
+                                "echo \"AllowTcpForwarding no\" >> /etc/ssh/sshd_config\n",
+                                "echo \"X11Forwarding no\" >> /etc/ssh/sshd_config\n",
+                                "\n",
+                                "mkdir /usr/bin/bastion\n",
+                                "\n",
+                                "cat > /usr/bin/bastion/shell << 'EOF'\n",
+                                "\n",
+                                "# Check that the SSH client did not supply a command\n",
+                                "if [[ -z $SSH_ORIGINAL_COMMAND ]]; then\n",
+                                "\n",
+                                "  # The format of log files is /var/log/bastion/YYYY-MM-DD_HH-MM-SS_user\n",
+                                "  LOG_FILE=\"`date --date=\"today\" \"+%Y-%m-%d_%H-%M-%S\"`_`whoami`\"\n",
+                                "  LOG_DIR=\"/var/log/bastion/\"\n",
+                                "\n",
+                                "  # Print a welcome message\n",
+                                "  echo \"\"\n",
+                                "  echo \"NOTE: This SSH session will be recorded\"\n",
+                                "  echo \"AUDIT KEY: $LOG_FILE\"\n",
+                                "  echo \"\"\n",
+                                "\n",
+                                "  # I suffix the log file name with a random string. I explain why later on.\n",
+                                "  SUFFIX=`mktemp -u _XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`\n",
+                                "\n",
+                                "  # Wrap an interactive shell into \"script\" to record the SSH session\n",
+                                "  script -qf --timing=$LOG_DIR$LOG_FILE$SUFFIX.time $LOG_DIR$LOG_FILE$SUFFIX.data --command=/bin/bash\n",
+                                "\n",
+                                "else\n",
+                                "\n",
+                                "  # The \"script\" program could be circumvented with some commands (e.g. bash, nc).\n",
+                                "  # Therefore, I intentionally prevent users from supplying commands.\n",
+                                "\n",
+                                "  echo \"This bastion supports interactive sessions only. Do not supply a command\"\n",
+                                "  exit 1\n",
+                                "\n",
+                                "fi\n",
+                                "\n",
+                                "EOF\n",
+                                "\n",
+                                "# Make the custom script executable\n",
+                                "chmod a+x /usr/bin/bastion/shell\n",
+                                "\n",
+                                "# Bastion host users could overwrite and tamper with an existing log file using \"script\" if\n",
+                                "# they knew the exact file name. I take several measures to obfuscate the file name:\n",
+                                "# 1. Add a random suffix to the log file name.\n",
+                                "# 2. Prevent bastion host users from listing the folder containing log files. This is done\n",
+                                "#    by changing the group owner of \"script\" and setting GID.\n",
+                                "chown root:ec2-user /usr/bin/script\n",
+                                "chmod g+s /usr/bin/script\n",
+                                "\n",
+                                "# 3. Prevent bastion host users from viewing processes owned by other users, because the log\n",
+                                "#    file name is one of the \"script\" execution parameters.\n",
+                                "mount -o remount,rw,hidepid=2 /proc\n",
+                                "awk '!/proc/' /etc/fstab > temp && mv temp /etc/fstab\n",
+                                "echo \"proc /proc proc defaults,hidepid=2 0 0\" >> /etc/fstab\n",
+                                "\n",
+                                "# Restart the SSH service to apply /etc/ssh/sshd_config modifications.\n",
+                                "service sshd restart\n",
+                                "\n",
+                                "############################\n",
+                                "## EXPORT LOG FILES TO S3 ##\n",
+                                "############################\n",
+                                "\n",
+                                "cat > /usr/bin/bastion/sync_s3 << 'EOF'\n",
+                                "\n",
+                                "# Copy log files to S3 with server-side encryption enabled.\n",
+                                "# Then, if successful, delete log files that are older than a day.\n",
+                                "LOG_DIR=\"/var/log/bastion/\"\n",
+                                "aws s3 cp $LOG_DIR s3://",
+                                {
+                                    "Ref": "Bucket"
+                                },
+                                "/logs/ --sse --region ",
+                                {
+                                    "Ref": "AWS::Region"
+                                },
+                                " --recursive && find $LOG_DIR* -mtime +1 -exec rm {} \\;\n",
+                                "\n",
+                                "EOF\n",
+                                "\n",
+                                "chmod 700 /usr/bin/bastion/sync_s3\n",
+                                "\n",
+                                "#######################################\n",
+                                "## SYNCHRONIZE USERS AND PUBLIC KEYS ##\n",
+                                "#######################################\n",
+                                "\n",
+                                "# Bastion host users should log in to the bastion host with their personal SSH key pair.\n",
+                                "# The public keys are stored on S3 with the following naming convention: \"username.pub\".\n",
+                                "# This script retrieves the public keys, creates or deletes local user accounts as needed,\n",
+                                "# and copies the public key to /home/username/.ssh/authorized_keys\n",
+                                "\n",
+                                "cat > /usr/bin/bastion/sync_users << 'EOF'\n",
+                                "\n",
+                                "# The file will log user changes\n",
+                                "LOG_FILE=\"/var/log/bastion/users_changelog.txt\"\n",
+                                "\n",
+                                "# The function returns the user name from the public key file name.\n",
+                                "# Example: public-keys/sshuser.pub => sshuser\n",
+                                "get_user_name () {\n",
+                                "  echo \"$1\" | sed -e 's/.*\\///g' | sed -e 's/\\.pub//g'\n",
+                                "}\n",
+                                "\n",
+                                "# For each public key available in the S3 bucket\n",
+                                "aws s3api list-objects --bucket ",
+                                {
+                                    "Ref": "Bucket"
+                                },
+                                " --prefix public-keys/ --region ",
+                                {
+                                    "Ref": "AWS::Region"
+                                },
+                                " --output text --query 'Contents[?Size>`0`].Key' | sed -e 'y/\\t/\\n/' > ~/keys_retrieved_from_s3\n",
+                                "while read line; do\n",
+                                "  USER_NAME=\"`get_user_name \"$line\"`\"\n",
+                                "\n",
+                                "  # Make sure the user name is alphanumeric\n",
+                                "  if [[ \"$USER_NAME\" =~ ^[a-z][-a-z0-9]*$ ]]; then\n",
+                                "\n",
+                                "    # Create a user account if it does not already exist\n",
+                                "    cut -d: -f1 /etc/passwd | grep -qx $USER_NAME\n",
+                                "    if [ $? -eq 1 ]; then\n",
+                                "      /usr/sbin/adduser $USER_NAME && \\\n",
+                                "      mkdir -m 700 /home/$USER_NAME/.ssh && \\\n",
+                                "      chown $USER_NAME:$USER_NAME /home/$USER_NAME/.ssh && \\\n",
+                                "      echo \"$line\" >> ~/keys_installed && \\\n",
+                                "      echo \"`date --date=\"today\" \"+%Y-%m-%d %H-%M-%S\"`: Creating user account for $USER_NAME ($line)\" >> $LOG_FILE\n",
+                                "    fi\n",
+                                "\n",
+                                "    # Copy the public key from S3, if an user account was created from this key\n",
+                                "    if [ -f ~/keys_installed ]; then\n",
+                                "      grep -qx \"$line\" ~/keys_installed\n",
+                                "      if [ $? -eq 0 ]; then\n",
+                                "        aws s3 cp s3://",
+                                {
+                                    "Ref": "Bucket"
+                                },
+                                "/$line /home/$USER_NAME/.ssh/authorized_keys --region ",
+                                {
+                                    "Ref": "AWS::Region"
+                                },
+                                "\n",
+                                "        chmod 600 /home/$USER_NAME/.ssh/authorized_keys\n",
+                                "        chown $USER_NAME:$USER_NAME /home/$USER_NAME/.ssh/authorized_keys\n",
+                                "      fi\n",
+                                "    fi\n",
+                                "\n",
+                                "  fi\n",
+                                "done < ~/keys_retrieved_from_s3\n",
+                                "\n",
+                                "# Remove user accounts whose public key was deleted from S3\n",
+                                "if [ -f ~/keys_installed ]; then\n",
+                                "  sort -uo ~/keys_installed ~/keys_installed\n",
+                                "  sort -uo ~/keys_retrieved_from_s3 ~/keys_retrieved_from_s3\n",
+                                "  comm -13 ~/keys_retrieved_from_s3 ~/keys_installed | sed \"s/\\t//g\" > ~/keys_to_remove\n",
+                                "  while read line; do\n",
+                                "    USER_NAME=\"`get_user_name \"$line\"`\"\n",
+                                "    echo \"`date --date=\"today\" \"+%Y-%m-%d %H-%M-%S\"`: Removing user account for $USER_NAME ($line)\" >> $LOG_FILE\n",
+                                "    /usr/sbin/userdel -r -f $USER_NAME\n",
+                                "  done < ~/keys_to_remove\n",
+                                "  comm -3 ~/keys_installed ~/keys_to_remove | sed \"s/\\t//g\" > ~/tmp && mv ~/tmp ~/keys_installed\n",
+                                "fi\n",
+                                "\n",
+                                "EOF\n",
+                                "\n",
+                                "chmod 700 /usr/bin/bastion/sync_users\n",
+                                "\n",
+                                "###########################################\n",
+                                "## SCHEDULE SCRIPTS AND SECURITY UPDATES ##\n",
+                                "###########################################\n",
+                                "\n",
+                                "cat > ~/mycron << EOF\n",
+                                "*/5 * * * * /usr/bin/bastion/sync_s3\n",
+                                "*/5 * * * * /usr/bin/bastion/sync_users\n",
+                                "0 0 * * * yum -y update --security\n",
+                                "EOF\n",
+                                "crontab ~/mycron\n",
+                                "rm ~/mycron\n",
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "/opt/aws/bin/cfn-signal -e 0 --stack ",
+                                            {
+                                                "Ref": "AWS::StackName"
+                                            },
+                                            " --resource BastionHostInstance --region ",
+                                            {
+                                                "Ref": "AWS::Region"
+                                            }
+                                        ]
+                                    ]
+                                },
+                                "\n"
+                            ]
+                        ]
+                    }
+                }
+            },
+            "CreationPolicy": {
+                "ResourceSignal": {
+                    "Timeout": "PT10M"
+                }
+            }
+        }
+    },
+    "Outputs": {
+        "BastionHostPublicIP": {
+            "Description": "Public IP address of the bastion host",
+            "Value": {
+                "Fn::GetAtt": [
+                    "BastionHostInstance",
+                    "PublicIp"
+                ]
+            }
+        }
+    }
+}
